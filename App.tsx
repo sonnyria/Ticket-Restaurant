@@ -122,7 +122,7 @@ const App: React.FC = () => {
       setLastUpdated(new Date());
       // Invalider l'historique pour le recharger la prochaine fois
       setHistoryData([]); 
-      setActiveTab('stock');
+      // On reste sur l'onglet distribution pour enchaîner les saisies
     } else {
       setTicketCount(previousValue);
       alert(`Erreur lors de l'enregistrement : ${result.message}`);
@@ -143,6 +143,25 @@ const App: React.FC = () => {
       alert(`Erreur lors de la mise à jour de la liste : ${result.message}`);
     }
     setIsNamesLoading(false);
+  };
+
+  // Gestion de l'édition/suppression d'historique
+  const handleHistoryUpdate = async (payload: SheetPayload) => {
+    if (!scriptUrl) return;
+    
+    // On ne met pas à jour l'état optimiste ici car c'est complexe (modification de liste + stock)
+    // On attend la réponse du serveur
+    const result = await updateTicketCount(scriptUrl, payload);
+
+    if (result.status === 'success') {
+      // Le backend nous renvoie le nouveau stock calculé
+      setTicketCount(result.value);
+      setLastUpdated(new Date());
+      // On recharge l'historique pour voir les modifs
+      await loadHistory();
+    } else {
+      alert(`Erreur lors de la modification : ${result.message}`);
+    }
   };
 
   const tabs = [
@@ -270,6 +289,7 @@ const App: React.FC = () => {
                 names={namesList}
                 loading={isHistoryLoading}
                 onRefresh={loadHistory}
+                onUpdateHistory={handleHistoryUpdate}
                 disabled={!scriptUrl}
               />
             </div>

@@ -11,6 +11,7 @@ export interface HistoryItem {
   date: string;
   name: string;
   quantity: string | number;
+  row?: number; // Index de la ligne dans le sheet
 }
 
 export interface SheetConfig {
@@ -26,7 +27,9 @@ export enum ActionType {
   HISTORY = 'history',
   ADD_NAME = 'add_name',
   DELETE_NAME = 'delete_name',
-  EDIT_NAME = 'edit_name'
+  EDIT_NAME = 'edit_name',
+  DELETE_HISTORY = 'delete_history',
+  EDIT_HISTORY = 'edit_history'
 }
 
 export interface SheetPayload {
@@ -36,4 +39,5 @@ export interface SheetPayload {
   name?: string;
   newName?: string; // Pour le renommage
   quantity?: number;
+  row?: number; // Pour identifier la ligne d'historique
 }

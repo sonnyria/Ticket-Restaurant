@@ -13,9 +13,11 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
 
   const codeSnippet = `
 // --- CONFIGURATION ---
-// Remplacez la valeur ci-dessous par l'ID de votre Google Sheet
-// (C'est la partie de l'URL entre "/d/" et "/edit")
-const SHEET_ID = "VOTRE_ID_SHEET_ICI"; 
+// Si ce script est créé via "Extensions > Apps Script" depuis votre Sheet,
+// il détectera automatiquement la feuille. Pas besoin de changer l'ID.
+
+// Optionnel : Si vous utilisez un script autonome, décommentez et mettez l'ID :
+// const SHEET_ID = "VOTRE_ID_SHEET_ICI"; 
 
 const TARGET_CELL = "L2"; // Stock total
 const NAMES_COL_INDEX = 11; // Colonne K (A=1, ... K=11)
@@ -47,7 +49,25 @@ function handleRequest(data) {
   if (!lock.tryLock(15000)) return createResponse({ status: "error", message: "Busy" });
   
   try {
-    var sheet = SpreadsheetApp.openById(SHEET_ID).getSheets()[0];
+    // Tentative de récupération automatique du Sheet
+    var ss;
+    try {
+      ss = SpreadsheetApp.getActiveSpreadsheet();
+    } catch(e) {}
+
+    // Fallback ID manuel si défini
+    if (!ss && typeof SHEET_ID !== 'undefined' && SHEET_ID !== "VOTRE_ID_SHEET_ICI") {
+      ss = SpreadsheetApp.openById(SHEET_ID);
+    }
+
+    if (!ss) {
+      return createResponse({ 
+        status: "error", 
+        message: "Impossible de trouver la feuille. Assurez-vous que le script est lié au Google Sheet (Extensions > Apps Script)." 
+      });
+    }
+
+    var sheet = ss.getSheets()[0];
     
     // --- GESTION DES NOMS (Add/Edit/Delete) ---
     if (["add_name", "delete_name", "edit_name"].indexOf(data.action) !== -1) {
@@ -87,14 +107,14 @@ function handleRequest(data) {
        return createResponse({ names: names, status: "success" });
     }
 
-    // --- ACTION: HISTORY ---
+    // --- ACTION: HISTORY READ ---
     if (data.action === "history") {
       var history = [];
       var lastRow = sheet.getLastRow();
       if (lastRow >= 2) {
         var values = sheet.getRange(2, 1, lastRow - 1, 3).getDisplayValues();
-        history = values.map(function(row) {
-          return { date: row[0], name: row[1], quantity: row[2] };
+        history = values.map(function(row, i) {
+          return { date: row[0], name: row[1], quantity: row[2], row: i + 2 };
         }).filter(function(item) {
           return item.name !== "" && item.quantity !== "";
         }).reverse();
@@ -102,7 +122,42 @@ function handleRequest(data) {
       return createResponse({ history: history, status: "success" });
     }
 
-    // --- ACTION: STOCK ---
+    // --- ACTION: DELETE_HISTORY ---
+    if (data.action === "delete_history" && data.row) {
+      var row = Number(data.row);
+      if (row < 2 || row > sheet.getLastRow()) return createResponse({ status: "error", message: "Invalid row" });
+      
+      var qty = Number(sheet.getRange(row, 3).getValue()) || 0;
+      var rangeStock = sheet.getRange(TARGET_CELL);
+      var currentStock = Number(rangeStock.getValue()) || 0;
+      currentStock += qty; 
+      rangeStock.setValue(currentStock);
+      
+      // CORRECTION : On ne supprime que les cellules A:C (1:3) et on décale vers le haut.
+      // Cela évite de supprimer toute la ligne et donc d'effacer les données en colonne K.
+      sheet.getRange(row, 1, 1, 3).deleteCells(SpreadsheetApp.Dimension.ROWS);
+      
+      return createResponse({ status: "success", value: currentStock });
+    }
+
+    // --- ACTION: EDIT_HISTORY ---
+    if (data.action === "edit_history" && data.row) {
+       var row = Number(data.row);
+       if (row < 2 || row > sheet.getLastRow()) return createResponse({ status: "error", message: "Invalid row" });
+
+       var oldQty = Number(sheet.getRange(row, 3).getValue()) || 0;
+       var newQty = Number(data.quantity) || 0;
+       
+       var rangeStock = sheet.getRange(TARGET_CELL);
+       var currentStock = Number(rangeStock.getValue()) || 0;
+       currentStock = currentStock + oldQty - newQty;
+       rangeStock.setValue(currentStock);
+       
+       sheet.getRange(row, 1, 1, 3).setValues([[data.date, data.name, newQty]]);
+       return createResponse({ status: "success", value: currentStock });
+    }
+
+    // --- ACTION: STOCK & TRANSACTION ---
     var rangeStock = sheet.getRange(TARGET_CELL);
     var currentStock = Number(rangeStock.getValue()) || 0;
 
@@ -111,7 +166,22 @@ function handleRequest(data) {
         var qty = Number(data.quantity) || 0;
         currentStock -= qty;
         rangeStock.setValue(currentStock);
-        sheet.appendRow([data.date, data.name, qty]);
+        
+        // Pour éviter d'écrire tout en bas de la feuille si la liste des noms est longue,
+        // on cherche la première ligne vide spécifiquement dans la colonne A.
+        var nextRow = 1;
+        var colA = sheet.getRange("A:A").getValues();
+        // On parcourt de bas en haut pour trouver la dernière valeur
+        for (var i = colA.length - 1; i >= 0; i--) {
+          if (colA[i][0] !== "") {
+            nextRow = i + 2; // La ligne suivante
+            break;
+          }
+        }
+        // Si la feuille est vide (sauf header), on commence ligne 2
+        if (nextRow < 2) nextRow = 2;
+
+        sheet.getRange(nextRow, 1, 1, 3).setValues([[data.date, data.name, qty]]);
       } 
       else if (["increment", "decrement", "set"].indexOf(data.action) !== -1) {
         var changeVal = (data.value !== undefined) ? Number(data.value) : 1;
@@ -179,40 +249,37 @@ function handleRequest(data) {
             </div>
 
             <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold">3</div>
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center font-bold">✓</div>
               <div className="text-sm text-slate-600">
-                <span className="text-red-600 font-bold bg-red-50 px-1 rounded">TRÈS IMPORTANT :</span> Tout en haut du code collé, remplacez <code>VOTRE_ID_SHEET_ICI</code> par l'ID de votre feuille.
-                <br />
-                <span className="text-xs text-slate-500 italic">(L'ID est la longue suite de caractères dans l'URL de votre navigateur, située entre <code>/d/</code> et <code>/edit</code>).</span>
+                <em>Note : Ce nouveau code détecte automatiquement votre feuille. Vous n'avez plus besoin de copier l'ID manuellement !</em>
               </div>
             </div>
 
             <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold">4</div>
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold">3</div>
               <div className="text-sm text-slate-600">
                 Cliquez sur le bouton bleu <strong>Déployer</strong> (en haut à droite) &gt; <strong>Nouveau déploiement</strong>.
               </div>
             </div>
 
             <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold">5</div>
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold">4</div>
               <div className="text-sm text-slate-600 space-y-1">
-                Cliquez sur la roue dentée (Paramètres) à côté de "Sélectionner le type", et choisissez <strong>Application Web</strong>.
+                Choisissez <strong>Application Web</strong>.
                 <div className="bg-blue-50 border border-blue-100 rounded p-2 mt-1">
                    Configurez exactement comme ceci :
                    <ul className="list-disc list-inside mt-1 font-semibold text-blue-900">
-                     <li>Description : <em>v1</em></li>
-                     <li>Exécuter en tant que : <strong>Moi</strong> (votre email)</li>
-                     <li>Qui peut accéder : <strong>Tout le monde</strong> <span className="text-xs font-normal text-blue-700">(Indispensable pour que l'app fonctionne)</span></li>
+                     <li>Exécuter en tant que : <strong>Moi</strong></li>
+                     <li>Qui peut accéder : <strong>Tout le monde</strong></li>
                    </ul>
                 </div>
               </div>
             </div>
 
             <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold">6</div>
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold">5</div>
               <div className="text-sm text-slate-600">
-                Cliquez sur <strong>Déployer</strong>. Copiez l'URL générée (qui se termine par <code>/exec</code>) et collez-la dans les paramètres de cette application.
+                Cliquez sur <strong>Déployer</strong>. <span className="text-red-600 font-bold">Copiez la NOUVELLE URL générée</span> (même si elle ressemble à l'ancienne) et mettez-la à jour dans les paramètres de cette application.
               </div>
             </div>
           </div>
@@ -235,10 +302,6 @@ function handleRequest(data) {
             <pre className="bg-slate-900 text-slate-50 p-4 rounded-xl text-xs overflow-x-auto font-mono leading-relaxed border border-slate-800 shadow-inner max-h-96">
               <code>{codeSnippet.trim()}</code>
             </pre>
-          </div>
-
-          <div className="text-center text-xs text-slate-400 pt-4 border-t border-slate-100">
-            Note : Si vous mettez à jour le code plus tard, n'oubliez pas de sélectionner "Nouvelle version" lors du déploiement.
           </div>
         </div>
       </div>
