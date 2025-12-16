@@ -1,0 +1,5 @@
+{
+  "name": "Ticket Restaurant",
+  "description": "A dashboard to manage ticket counts directly connected to Google Sheets.",
+  "requestFramePermissions": []
+}
